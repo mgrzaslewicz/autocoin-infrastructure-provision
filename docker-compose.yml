@@ -1,0 +1,238 @@
+version: '3.7'
+services:
+  autocoin-trader-frontend:
+    image: autocoin-trader-frontend:latest
+    container_name: autocoin-trader-frontend
+    environment:
+      CONFIG: localhost
+    networks:
+      - autocoin-services
+    restart: 'no'
+    ports:
+      - 4280:80
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+  autocoin-exchange-mediator:
+    image: autocoin-exchange-mediator:latest
+    container_name: autocoin-exchange-mediator
+    networks:
+      - autocoin-services
+      - telegraf
+    restart: 'no'
+    ports:
+      - 9001:80
+    volumes:
+      - ./autocoin-exchange-mediator/data:/app/data
+      - ./autocoin-exchange-mediator/log:/app/log
+    deploy:
+      resources:
+        limits:
+          memory: 1200M
+    depends_on:
+      - autocoin-auth-service
+    environment:
+      exchangesApiUrl: http://autocoin-auth-service
+      autocoinOauth2ServerUrl: http://autocoin-auth-service
+      SERVER_PORT: 80
+      JVM_ARGS: -Xmx600m
+      METRICS_DESTINATION: TELEGRAF
+      OAUTH_CLIENT_SECRET: autocoin-exchange-mediator-secret-for-local-development
+  autocoin-arbitrage-monitor:
+    image: autocoin-arbitrage-monitor:latest
+    container_name: autocoin-arbitrage-monitor
+    networks:
+      - autocoin-services
+      - telegraf
+    restart: 'no'
+    ports:
+      - 10021:80
+    volumes:
+      - ./autocoin-arbitrage-monitor/data:/app/data
+      - ./autocoin-arbitrage-monitor/log:/app/log
+    deploy:
+      resources:
+        limits:
+          memory: 600M
+    depends_on:
+      - autocoin-exchange-mediator
+    environment:
+      JVM_ARGS: -Xmx400m
+      PROFILES: docker,sampleOauthClientSecret
+  autocoin-balance-monitor:
+    image: autocoin-balance-monitor:latest
+    container_name: autocoin-balance-monitor
+    networks:
+      - autocoin-services
+      - telegraf
+      - balance-monitor-db
+    restart: 'no'
+    ports:
+      - 10022:80
+    volumes:
+      - ./autocoin-balance-monitor/data:/app/data
+      - ./autocoin-balance-monitor/log:/app/log
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    depends_on:
+      - autocoin-exchange-mediator
+      - autocoin-balance-monitor-db
+    environment:
+      JVM_ARGS: -Xmx150m
+      PROFILES: docker,sampleOauthClientSecret
+      db.jdbcUrl: jdbc:postgresql://autocoin-balance-monitor-db/balance-monitor?ApplicationName=autocoin-balance-monitor
+      db.username: balance-monitor-user
+      db.password: balance-monitor-user-password
+  autocoin-auth-service:
+    image: autocoin-auth-service:latest
+    container_name: autocoin-auth-service
+    networks:
+      - autocoin-services
+      - telegraf
+      - auth-service-db
+    depends_on:
+      - autocoin-auth-service-db
+      - telegraf
+    restart: 'no'
+    ports:
+      - 9002:80
+    volumes:
+      - ./autocoin-auth-service/data:/app/data
+      - ./autocoin-auth-service/log:/app/log
+    deploy:
+      resources:
+        limits:
+          memory: 400m
+    env_file:
+      - ./autocoin-auth-service/config.env
+    environment:
+      JVM_ARGS: -Xmx200m
+      SERVER_PORT: 80
+      METRICS_DESTINATION: TELEGRAF
+      JDBC_URL: jdbc:postgresql://autocoin-auth-service-db/auth-service?ApplicationName=autocoin-auth-service
+      DB_USERNAME: auth-service-user
+      DB_PASSWORD: auth-service-user-password
+      SPRING_PROFILES_ACTIVE: fileEmail,sampleOauthClients
+  autocoin-balance-monitor-db:
+    image: postgres:15.2-alpine
+    container_name: autocoin-balance-monitor-db
+    networks:
+      - balance-monitor-db
+    restart: 'no'
+    ports:
+      - 5433:5432
+    volumes:
+      - ./autocoin-balance-monitor-db/data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 50m
+    environment:
+      POSTGRES_USER: balance-monitor-user
+      POSTGRES_PASSWORD: balance-monitor-user-password
+      POSTGRES_DB: balance-monitor
+  autocoin-auth-service-db:
+    image: postgres:11.0-alpine
+    container_name: autocoin-auth-service-db
+    networks:
+      - auth-service-db
+    restart: 'no'
+    ports:
+      - 5432:5432
+    volumes:
+      - ./autocoin-auth-service-db/data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 100m
+    environment:
+      POSTGRES_USER: auth-service-user
+      POSTGRES_PASSWORD: auth-service-user-password
+      POSTGRES_DB: auth-service
+  influxdb:
+    image: influxdb:1.8.7-alpine
+    container_name: autocoin-influxdb
+    deploy:
+      resources:
+        limits:
+          memory: 500m
+    restart: 'no'
+    ports:
+      - 127.0.0.1:8086:8086
+    networks:
+      - influxdb
+    volumes:
+      - ./influxdb/data:/var/lib/influxdb
+      - ./influxdb/influxdb.conf:/etc/influxdb/influxdb.conf:ro
+    environment:
+      INFLUXDB_DB: autocoin_influxdb # Used only on first run
+      INFLUXDB_HTTP_AUTH_ENABLED: "true"
+      INFLUXDB_ADMIN_USER: influxdb-admin # Used only on first run
+      INFLUXDB_ADMIN_PASSWORD: influxdb-admin-password
+      INFLUXDB_USER: influxdb-user # Used only on first run
+      INFLUXDB_USER_PASSWORD: influxdb-user-password
+      INFLUXDB_INIT_RETENTION: 4w # Used only for first run. Seems not to be working working, the goal is to have the oldest data 4 weeks
+  telegraf:
+    image: telegraf:1.26.1-alpine
+    container_name: autocoin-telegraf
+    user: telegraf:${DOCKER_GROUP} # https://github.com/influxdata/telegraf/issues/10050#issuecomment-960246293
+    depends_on:
+      - influxdb
+    deploy:
+      resources:
+        reservations:
+          memory: 64m
+        limits:
+          memory: 128m
+    mem_reservation: 64m
+    restart: 'no'
+    ports:
+      - 127.0.0.1:8125:8125/udp
+    networks:
+      - telegraf
+      - influxdb
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/rootfs/sys:ro
+      - /proc:/rootfs/proc:ro
+      - /etc:/rootfs/etc:ro
+      - /:/hostfs:ro
+    environment:
+      INFLUXDB_DB: autocoin_influxdb # it cannot contain '-' character
+      INFLUXDB_HTTP_USER: influxdb-user
+      INFLUXDB_HTTP_PASSWORD: influxdb-user-password
+      TELEGRAF_LOGS_PATH: ./telegraf/telegraf.log
+  grafana:
+    image: grafana/grafana:9.4.7
+    container_name: autocoin-grafana
+    depends_on:
+      - influxdb
+    deploy:
+      resources:
+        reservations:
+          memory: 64m
+        limits:
+          memory: 512m
+    restart: 'no'
+    user: "0" # root
+    ports:
+      - 127.0.0.1:3000:3000
+    networks:
+      - influxdb
+    volumes:
+      - ./grafana:/var/lib/grafana
+networks:
+  autocoin-services:
+    external: false
+  auth-service-db:
+    external: false
+  balance-monitor-db:
+    external: false
+  influxdb:
+    external: false
+  telegraf:
+    external: false
